@@ -140,6 +140,71 @@ def resolve_items(articles, brief):
 
 
 # ----------------------------------------------------------------------------
+# 2.5 网页截图（Playwright）：首屏缩略图 + 整页大图，存到 docs/shots（托管到 Pages）
+# ----------------------------------------------------------------------------
+COOKIE_BTNS = [
+    "#onetrust-accept-btn-handler",
+    "button:has-text('Accept All')",
+    "button:has-text('Accept')",
+    "button:has-text('I Agree')",
+    "button:has-text('Agree')",
+    "button:has-text('同意')",
+]
+
+
+def capture_screenshots(items, date_str):
+    """对每条选中新闻的原网页截图：{i}_thumb.jpg(首屏) + {i}_full.jpg(整页)。
+    best-effort：失败的条目不带截图，不影响整体。"""
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception as e:
+        print("playwright import failed:", e)
+        return
+    outdir = f"docs/shots/{date_str}"
+    os.makedirs(outdir, exist_ok=True)
+    with sync_playwright() as p:
+        browser = p.chromium.launch(args=["--no-sandbox", "--disable-dev-shm-usage"])
+        ctx = browser.new_context(viewport={"width": 900, "height": 600},
+                                  user_agent=UA, locale="en-US")
+        for i, it in enumerate(items):
+            page = ctx.new_page()
+            try:
+                page.goto(it["url"], wait_until="domcontentloaded", timeout=30000)
+                page.wait_for_timeout(2500)
+                for sel in COOKIE_BTNS:          # 尽量关掉 cookie/订阅弹窗
+                    try:
+                        page.click(sel, timeout=1200)
+                        page.wait_for_timeout(400)
+                        break
+                    except Exception:
+                        pass
+                page.wait_for_timeout(800)
+                page.screenshot(path=f"{outdir}/{i}_thumb.jpg", type="jpeg", quality=72)
+                page.screenshot(path=f"{outdir}/{i}_full.jpg", type="jpeg", quality=70,
+                                full_page=True)
+                it["shot_thumb"] = f"shots/{date_str}/{i}_thumb.jpg"
+                it["shot_full"] = f"shots/{date_str}/{i}_full.jpg"
+                print(f"shot {i} ok")
+            except Exception as e:
+                print(f"shot {i} failed:", e)
+            finally:
+                page.close()
+        browser.close()
+
+
+def prune_shots(keep=14):
+    """只保留最近 keep 天的截图目录，控制仓库体积。"""
+    root = "docs/shots"
+    if not os.path.isdir(root):
+        return
+    dirs = sorted([d for d in os.listdir(root)
+                   if re.match(r"\d{4}-\d{2}-\d{2}$", d)], reverse=True)
+    import shutil
+    for d in dirs[keep:]:
+        shutil.rmtree(os.path.join(root, d), ignore_errors=True)
+
+
+# ----------------------------------------------------------------------------
 # 3. 生成 HTML
 # ----------------------------------------------------------------------------
 REGION_ORDER = ["南亚", "东南亚", "东亚", "中亚", "中东", "其他"]
@@ -170,14 +235,28 @@ def build_html(date_str, weekday_cn, items, brief_text):
         for it in groups[reg]:
             impact = (f'<div style="color:#6b7280;font-size:13px;margin-top:4px;">💡 {it["impact"]}</div>'
                       if it["impact"] else "")
+            # 截图：首屏缩略图(点击→整页截图)。原站被墙，"阅读全文"指向托管的整页截图。
+            shot_html, read_link = "", it["url"]
+            if it.get("shot_thumb"):
+                thumb = f'{pages}/{it["shot_thumb"]}' if pages else it["shot_thumb"]
+                full = f'{pages}/{it["shot_full"]}' if pages else it["shot_full"]
+                read_link = full
+                shot_html = (
+                    f'<a href="{full}" target="_blank" style="display:block;margin-top:8px;">'
+                    f'<img src="{thumb}" alt="网页截图" style="width:100%;max-width:560px;'
+                    f'border:1px solid #e5e7eb;border-radius:6px;display:block;"></a>'
+                )
+            read_label = "阅读全文（整页截图）" if it.get("shot_full") else "阅读原文"
             body += (
-                f'<div style="padding:12px 0;border-bottom:1px solid #f0f0f0;">'
-                f'<a href="{it["url"]}" target="_blank" style="color:#1f2329;font-size:15px;'
+                f'<div style="padding:14px 0;border-bottom:1px solid #f0f0f0;">'
+                f'<a href="{read_link}" target="_blank" style="color:#1f2329;font-size:15px;'
                 f'font-weight:600;text-decoration:none;">{it["title_zh"]}</a>'
                 f'<div style="color:#374151;font-size:14px;line-height:1.7;margin-top:6px;">{it["summary_zh"]}</div>'
                 f'{impact}'
-                f'<div style="color:#9ca3af;font-size:12px;margin-top:5px;">来源：{it["source"]} · '
-                f'<a href="{it["url"]}" target="_blank" style="color:#2563eb;">阅读原文 ›</a></div>'
+                f'{shot_html}'
+                f'<div style="color:#9ca3af;font-size:12px;margin-top:7px;">来源：{it["source"]} · '
+                f'<a href="{read_link}" target="_blank" style="color:#2563eb;">{read_label} ›</a> · '
+                f'<a href="{it["url"]}" target="_blank" style="color:#9ca3af;">英文原站</a></div>'
                 f'</div>'
             )
 
@@ -271,6 +350,13 @@ def main():
     items = resolve_items(articles, brief)
     brief_text = (brief or {}).get("brief", "（综述未生成）")
     print(f"selected {len(items)} items")
+
+    # 给每条选中新闻的原网页截图（首屏+整页），托管到 Pages
+    try:
+        capture_screenshots(items, dash)
+        prune_shots(14)
+    except Exception as e:
+        print("screenshots failed:", e)
 
     html = build_html(dash, weekday_cn, items, brief_text)
 
