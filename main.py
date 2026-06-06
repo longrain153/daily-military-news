@@ -7,6 +7,7 @@
 import os
 import re
 import json
+import time
 import smtplib
 import datetime as dt
 from email.mime.text import MIMEText
@@ -152,9 +153,32 @@ COOKIE_BTNS = [
 ]
 
 
+CHALLENGE_MARKERS = [
+    "verify you are human", "checking your browser", "just a moment",
+    "attention required", "cf-challenge", "enable javascript and cookies",
+    "请完成以下验证", "人机验证",
+]
+STEALTH_JS = (
+    "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
+    "window.chrome={runtime:{}};"
+    "Object.defineProperty(navigator,'languages',{get:()=>['en-US','en']});"
+    "Object.defineProperty(navigator,'plugins',{get:()=>[1,2,3,4,5]});"
+)
+
+
+def _is_challenge(page):
+    try:
+        title = (page.title() or "").lower()
+        body = (page.inner_text("body", timeout=2000) or "").lower()[:1500]
+    except Exception:
+        return False
+    blob = title + " " + body
+    return any(m in blob for m in CHALLENGE_MARKERS)
+
+
 def capture_screenshots(items, date_str):
     """对每条选中新闻的原网页截图：{i}_thumb.jpg(首屏) + {i}_full.jpg(整页)。
-    best-effort：失败的条目不带截图，不影响整体。"""
+    带反检测；若遇到人机验证页则等待自动通过，仍未过则跳过该条(不展示验证页截图)。"""
     try:
         from playwright.sync_api import sync_playwright
     except Exception as e:
@@ -163,15 +187,29 @@ def capture_screenshots(items, date_str):
     outdir = f"docs/shots/{date_str}"
     os.makedirs(outdir, exist_ok=True)
     with sync_playwright() as p:
-        browser = p.chromium.launch(args=["--no-sandbox", "--disable-dev-shm-usage"])
-        ctx = browser.new_context(viewport={"width": 900, "height": 600},
-                                  user_agent=UA, locale="en-US")
+        browser = p.chromium.launch(args=[
+            "--no-sandbox", "--disable-dev-shm-usage",
+            "--disable-blink-features=AutomationControlled",
+        ])
+        ctx = browser.new_context(
+            viewport={"width": 900, "height": 600}, user_agent=UA, locale="en-US",
+            extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
+        )
+        ctx.add_init_script(STEALTH_JS)
         for i, it in enumerate(items):
             page = ctx.new_page()
             try:
-                page.goto(it["url"], wait_until="domcontentloaded", timeout=30000)
-                page.wait_for_timeout(2500)
-                for sel in COOKIE_BTNS:          # 尽量关掉 cookie/订阅弹窗
+                page.goto(it["url"], wait_until="domcontentloaded",
+                          timeout=35000, referer="https://www.google.com/")
+                page.wait_for_timeout(3500)
+                # 若是人机验证页，多等几秒让 JS 挑战自动通过，再复检
+                if _is_challenge(page):
+                    page.wait_for_timeout(6000)
+                if _is_challenge(page):
+                    print(f"shot {i} blocked by human-verification, skip")
+                    page.close()
+                    continue
+                for sel in COOKIE_BTNS:
                     try:
                         page.click(sel, timeout=1200)
                         page.wait_for_timeout(400)
@@ -179,13 +217,11 @@ def capture_screenshots(items, date_str):
                     except Exception:
                         pass
                 page.wait_for_timeout(700)
-                # 整页大图：从顶部完整截取
                 page.screenshot(path=f"{outdir}/{i}_full.jpg", type="jpeg", quality=70,
                                 full_page=True)
-                # 缩略图：滚动到文章标题，让首屏显示"标题+配图+首段"而非网站导航
                 try:
                     page.locator("h1").first.scroll_into_view_if_needed(timeout=3000)
-                    page.evaluate("window.scrollBy(0, -90)")   # 留一点顶部余量
+                    page.evaluate("window.scrollBy(0, -90)")
                     page.wait_for_timeout(700)
                 except Exception:
                     pass
@@ -196,7 +232,9 @@ def capture_screenshots(items, date_str):
             except Exception as e:
                 print(f"shot {i} failed:", e)
             finally:
-                page.close()
+                if not page.is_closed():
+                    page.close()
+            time.sleep(1.2)        # 条目间延时，降低被反爬触发挑战的概率
         browser.close()
 
 
