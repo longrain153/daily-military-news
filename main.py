@@ -141,109 +141,55 @@ def resolve_items(articles, brief):
 
 
 # ----------------------------------------------------------------------------
-# 2.5 网页截图（Playwright）：首屏缩略图 + 整页大图，存到 docs/shots（托管到 Pages）
+# 2.5 网页截图（thum.io 服务，绕过原站 Cloudflare）：下载图片字节托管到 Pages
 # ----------------------------------------------------------------------------
-COOKIE_BTNS = [
-    "#onetrust-accept-btn-handler",
-    "button:has-text('Accept All')",
-    "button:has-text('Accept')",
-    "button:has-text('I Agree')",
-    "button:has-text('Agree')",
-    "button:has-text('同意')",
-]
+def _thumio(url, full):
+    """thum.io 截图 URL。full=整页，否则首屏(width 900，含文章标题区)。"""
+    base = "https://image.thum.io/get"
+    if full:
+        return f"{base}/width/1000/fullpage/wait/8/noanimate/{url}"
+    return f"{base}/width/900/wait/8/noanimate/{url}"
 
 
-CHALLENGE_MARKERS = [
-    "verify you are human", "checking your browser", "just a moment",
-    "attention required", "cf-challenge", "enable javascript and cookies",
-    "请完成以下验证", "人机验证",
-]
-STEALTH_JS = (
-    "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
-    "window.chrome={runtime:{}};"
-    "Object.defineProperty(navigator,'languages',{get:()=>['en-US','en']});"
-    "Object.defineProperty(navigator,'plugins',{get:()=>[1,2,3,4,5]});"
-)
-
-
-def _is_challenge(page):
-    try:
-        title = (page.title() or "").lower()
-        body = (page.inner_text("body", timeout=2000) or "").lower()[:1500]
-    except Exception:
-        return False
-    blob = title + " " + body
-    return any(m in blob for m in CHALLENGE_MARKERS)
+def _download_shot(url, path, headers):
+    """取 thum.io 图片并保存；含重试(thum.io 异步生成，重取会拿到已就绪的真图)。"""
+    for attempt in range(4):
+        try:
+            r = requests.get(url, headers=headers, timeout=60)
+            if r.status_code == 200 and len(r.content) > 8000:
+                with open(path, "wb") as f:
+                    f.write(r.content)
+                return True
+        except Exception as e:
+            print("  thumio err:", e)
+        time.sleep(7)
+    return False
 
 
 def capture_screenshots(items, date_str):
-    """对每条选中新闻的原网页截图：{i}_thumb.jpg(首屏) + {i}_full.jpg(整页)。
-    带反检测；若遇到人机验证页则等待自动通过，仍未过则跳过该条(不展示验证页截图)。"""
-    try:
-        from playwright.sync_api import sync_playwright
-    except Exception as e:
-        print("playwright import failed:", e)
-        return
+    """用 thum.io 给每条新闻原网页截图(首屏+整页)，下载保存到 docs/shots(托管 Pages)。
+    thum.io 用自有渲染设施，可绕过原站对数据中心 IP 的 Cloudflare 拦截。"""
     outdir = f"docs/shots/{date_str}"
     os.makedirs(outdir, exist_ok=True)
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False, args=[
-            "--no-sandbox", "--disable-dev-shm-usage",
-            "--disable-blink-features=AutomationControlled",
-        ])
-        ctx = browser.new_context(
-            viewport={"width": 900, "height": 600}, user_agent=UA, locale="en-US",
-            extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
-        )
-        ctx.add_init_script(STEALTH_JS)
-        for i, it in enumerate(items):
-            page = ctx.new_page()
+    h = {"User-Agent": UA}
+    # 预热：先触发 thum.io 生成所有图（异步）
+    for it in items:
+        for full in (False, True):
             try:
-                page.goto(it["url"], wait_until="domcontentloaded",
-                          timeout=35000, referer="https://www.google.com/")
-                page.wait_for_timeout(4000)
-                # Cloudflare JS 挑战：等待自动通过，必要时 reload 重试一次
-                for attempt in range(2):
-                    if not _is_challenge(page):
-                        break
-                    page.wait_for_timeout(6000)
-                    if _is_challenge(page):
-                        try:
-                            page.reload(wait_until="domcontentloaded", timeout=30000)
-                            page.wait_for_timeout(4000)
-                        except Exception:
-                            pass
-                if _is_challenge(page):
-                    print(f"shot {i} blocked by human-verification, skip")
-                    page.close()
-                    continue
-                for sel in COOKIE_BTNS:
-                    try:
-                        page.click(sel, timeout=1200)
-                        page.wait_for_timeout(400)
-                        break
-                    except Exception:
-                        pass
-                page.wait_for_timeout(700)
-                page.screenshot(path=f"{outdir}/{i}_full.jpg", type="jpeg", quality=70,
-                                full_page=True)
-                try:
-                    page.locator("h1").first.scroll_into_view_if_needed(timeout=3000)
-                    page.evaluate("window.scrollBy(0, -90)")
-                    page.wait_for_timeout(700)
-                except Exception:
-                    pass
-                page.screenshot(path=f"{outdir}/{i}_thumb.jpg", type="jpeg", quality=74)
-                it["shot_thumb"] = f"shots/{date_str}/{i}_thumb.jpg"
-                it["shot_full"] = f"shots/{date_str}/{i}_full.jpg"
-                print(f"shot {i} ok")
-            except Exception as e:
-                print(f"shot {i} failed:", e)
-            finally:
-                if not page.is_closed():
-                    page.close()
-            time.sleep(1.2)        # 条目间延时，降低被反爬触发挑战的概率
-        browser.close()
+                requests.get(_thumio(it["url"], full), headers=h, timeout=40)
+            except Exception:
+                pass
+    time.sleep(18)
+    # 下载保存
+    for i, it in enumerate(items):
+        thumb_ok = _download_shot(_thumio(it["url"], False), f"{outdir}/{i}_thumb.jpg", h)
+        full_ok = _download_shot(_thumio(it["url"], True), f"{outdir}/{i}_full.jpg", h)
+        if thumb_ok and full_ok:
+            it["shot_thumb"] = f"shots/{date_str}/{i}_thumb.jpg"
+            it["shot_full"] = f"shots/{date_str}/{i}_full.jpg"
+            print(f"shot {i} ok")
+        else:
+            print(f"shot {i} incomplete (thumb={thumb_ok} full={full_ok})")
 
 
 def prune_shots(keep=14):

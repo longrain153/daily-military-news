@@ -16,17 +16,13 @@ permissions:
 jobs:
   brief:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
-      - name: Install Chromium + xvfb for screenshots
-        run: |
-          python -m playwright install --with-deps chromium
-          sudo apt-get install -y xvfb
       - name: Run daily brief
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
@@ -34,7 +30,7 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
           PAGES_BASE: https://longrain153.github.io/daily-military-news
-        run: xvfb-run --auto-servernum python main.py
+        run: python main.py
 
       - name: Publish to GitHub Pages
         run: |
