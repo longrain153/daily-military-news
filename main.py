@@ -18,10 +18,12 @@ import requests
 
 BJ = dt.timezone(dt.timedelta(hours=8))
 
-# 数据源（英文外媒 RSS，海外可达；The Diplomat 专注亚太地缘安全）
+# 数据源（英文外媒 RSS，海外可达且可截图，非 Cloudflare 强拦截站）
+# 注：The Diplomat 主题最契合但被 Cloudflare 拦截无法截图，已弃用。
 FEEDS = [
-    ("The Diplomat", "https://thediplomat.com/feed/"),
+    ("The Hindu", "https://www.thehindu.com/news/international/feeder/default.rss"),
     ("Al Jazeera", "https://www.aljazeera.com/xml/rss/all.xml"),
+    ("Modern Diplomacy", "https://moderndiplomacy.eu/feed/"),
 ]
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
@@ -43,8 +45,10 @@ def fetch_articles():
     for name, url in FEEDS:
         try:
             r = requests.get(url, headers={"User-Agent": UA}, timeout=25)
-            # 用正则解析 RSS <item>（避免额外依赖）
+            # 用正则解析 RSS <item>/<entry>（避免额外依赖）
             blocks = re.findall(r"<item\b.*?>(.*?)</item>", r.text, re.S | re.I)
+            if not blocks:
+                blocks = re.findall(r"<entry\b.*?>(.*?)</entry>", r.text, re.S | re.I)
             for b in blocks[:40]:
                 def grab(tag):
                     m = re.search(rf"<{tag}\b[^>]*>(.*?)</{tag}>", b, re.S | re.I)
@@ -278,7 +282,7 @@ def build_html(date_str, weekday_cn, items, brief_text):
     </div>
     {body}
     <div style="margin-top:16px;padding:12px 14px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;font-size:12px;color:#6b7280;line-height:1.7;">
-      信息来自公开外媒报道（The Diplomat、Al Jazeera 等），由 DeepSeek 翻译与梳理，可能存在偏差或时效差，仅供参考，不代表本简报立场。点击标题/原文可查看英文出处。
+      信息来自公开外媒报道（The Hindu、Al Jazeera、Modern Diplomacy 等），由 DeepSeek 翻译与梳理，可能存在偏差或时效差，仅供参考，不代表本简报立场。截图由第三方服务生成、托管于本站，方便在原站无法访问时查看。
     </div>
   </div>
   <div style="text-align:center;color:#9ca3af;font-size:12px;padding:16px;">每日军情简报 · 云端自动推送 · {date_str}</div>

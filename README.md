@@ -5,9 +5,13 @@ DeepSeek 筛选（聚焦中国周边、南亚/东南亚等国内少报道地区�
 邮件发送 + 发布成网页。
 
 ## 数据源
-- The Diplomat（亚太地缘安全，主源）
-- Al Jazeera（国际补充）
+- The Hindu（国际版，印度/南亚）
+- Al Jazeera（国际冲突/东南亚）
+- Modern Diplomacy（地缘政治分析）
 - 翻译/筛选/解读：DeepSeek `deepseek-chat`
+- 网页截图：thum.io（绕过原站访问限制，下载托管到本站 Pages）
+
+> 注：The Diplomat 主题最契合，但其 Cloudflare 反爬导致无法稳定截图，已弃用。
 
 ## 在线版
 - 最新：https://longrain153.github.io/daily-military-news/
