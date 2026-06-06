@@ -178,10 +178,18 @@ def capture_screenshots(items, date_str):
                         break
                     except Exception:
                         pass
-                page.wait_for_timeout(800)
-                page.screenshot(path=f"{outdir}/{i}_thumb.jpg", type="jpeg", quality=72)
+                page.wait_for_timeout(700)
+                # 整页大图：从顶部完整截取
                 page.screenshot(path=f"{outdir}/{i}_full.jpg", type="jpeg", quality=70,
                                 full_page=True)
+                # 缩略图：滚动到文章标题，让首屏显示"标题+配图+首段"而非网站导航
+                try:
+                    page.locator("h1").first.scroll_into_view_if_needed(timeout=3000)
+                    page.evaluate("window.scrollBy(0, -90)")   # 留一点顶部余量
+                    page.wait_for_timeout(700)
+                except Exception:
+                    pass
+                page.screenshot(path=f"{outdir}/{i}_thumb.jpg", type="jpeg", quality=74)
                 it["shot_thumb"] = f"shots/{date_str}/{i}_thumb.jpg"
                 it["shot_full"] = f"shots/{date_str}/{i}_full.jpg"
                 print(f"shot {i} ok")
