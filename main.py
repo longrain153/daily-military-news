@@ -187,7 +187,7 @@ def capture_screenshots(items, date_str):
     outdir = f"docs/shots/{date_str}"
     os.makedirs(outdir, exist_ok=True)
     with sync_playwright() as p:
-        browser = p.chromium.launch(args=[
+        browser = p.chromium.launch(headless=False, args=[
             "--no-sandbox", "--disable-dev-shm-usage",
             "--disable-blink-features=AutomationControlled",
         ])
@@ -201,10 +201,18 @@ def capture_screenshots(items, date_str):
             try:
                 page.goto(it["url"], wait_until="domcontentloaded",
                           timeout=35000, referer="https://www.google.com/")
-                page.wait_for_timeout(3500)
-                # 若是人机验证页，多等几秒让 JS 挑战自动通过，再复检
-                if _is_challenge(page):
+                page.wait_for_timeout(4000)
+                # Cloudflare JS 挑战：等待自动通过，必要时 reload 重试一次
+                for attempt in range(2):
+                    if not _is_challenge(page):
+                        break
                     page.wait_for_timeout(6000)
+                    if _is_challenge(page):
+                        try:
+                            page.reload(wait_until="domcontentloaded", timeout=30000)
+                            page.wait_for_timeout(4000)
+                        except Exception:
+                            pass
                 if _is_challenge(page):
                     print(f"shot {i} blocked by human-verification, skip")
                     page.close()
