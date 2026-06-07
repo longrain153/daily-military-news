@@ -204,10 +204,14 @@ def capture_screenshots(items, date_str):
                 page.wait_for_timeout(600)
                 page.screenshot(path=f"{outdir}/{i}_full.jpg", type="jpeg", quality=70,
                                 full_page=True)
+                # 缩略图：精确滚动到标题(h1)紧贴顶部，避免上方大片空白
                 try:
-                    page.locator("h1").first.scroll_into_view_if_needed(timeout=3000)
-                    page.evaluate("window.scrollBy(0, -90)")
-                    page.wait_for_timeout(600)
+                    page.evaluate(
+                        "() => { const h = document.querySelector('h1');"
+                        " if (h) { window.scrollTo(0, h.getBoundingClientRect().top"
+                        " + window.scrollY - 16); } }"
+                    )
+                    page.wait_for_timeout(500)
                 except Exception:
                     pass
                 page.screenshot(path=f"{outdir}/{i}_thumb.jpg", type="jpeg", quality=74)
