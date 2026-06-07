@@ -145,55 +145,81 @@ def resolve_items(articles, brief):
 
 
 # ----------------------------------------------------------------------------
-# 2.5 网页截图（thum.io 服务，绕过原站 Cloudflare）：下载图片字节托管到 Pages
+# 2.5 网页截图（自托管 Playwright，针对非 Cloudflare 源，稳定不限流）
 # ----------------------------------------------------------------------------
-def _thumio(url, full):
-    """thum.io 截图 URL。full=整页，否则首屏(width 900，含文章标题区)。"""
-    base = "https://image.thum.io/get"
-    if full:
-        return f"{base}/width/1000/fullpage/wait/8/noanimate/{url}"
-    return f"{base}/width/900/wait/8/noanimate/{url}"
+COOKIE_BTNS = [
+    "#onetrust-accept-btn-handler",
+    "button:has-text('Accept All')", "button:has-text('Accept')",
+    "button:has-text('I Agree')", "button:has-text('Agree')",
+    "button:has-text('Got it')", "button:has-text('同意')",
+]
+CHALLENGE_MARKERS = [
+    "verify you are human", "checking your browser", "just a moment",
+    "attention required", "cf-challenge", "enable javascript and cookies",
+]
 
 
-def _download_shot(url, path, headers):
-    """取 thum.io 图片并保存；含重试(thum.io 异步生成，重取会拿到已就绪的真图)。"""
-    for attempt in range(4):
-        try:
-            r = requests.get(url, headers=headers, timeout=60)
-            if r.status_code == 200 and len(r.content) > 8000:
-                with open(path, "wb") as f:
-                    f.write(r.content)
-                return True
-        except Exception as e:
-            print("  thumio err:", e)
-        time.sleep(7)
-    return False
+def _is_challenge(page):
+    try:
+        blob = ((page.title() or "") + " " +
+                (page.inner_text("body", timeout=2000) or "")[:1500]).lower()
+    except Exception:
+        return False
+    return any(m in blob for m in CHALLENGE_MARKERS)
 
 
 def capture_screenshots(items, date_str):
-    """用 thum.io 给每条新闻原网页截图(首屏+整页)，下载保存到 docs/shots(托管 Pages)。
-    thum.io 用自有渲染设施，可绕过原站对数据中心 IP 的 Cloudflare 拦截。"""
+    """用 Playwright 对每条新闻原网页截 {i}_thumb.jpg(首屏,滚到标题) + {i}_full.jpg(整页)，
+    存 docs/shots(托管 Pages)。遇到人机验证页则跳过(不展示验证页截图)。"""
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception as e:
+        print("playwright import failed:", e)
+        return
     outdir = f"docs/shots/{date_str}"
     os.makedirs(outdir, exist_ok=True)
-    h = {"User-Agent": UA}
-    # 预热：先触发 thum.io 生成所有图（异步）
-    for it in items:
-        for full in (False, True):
+    with sync_playwright() as p:
+        browser = p.chromium.launch(args=["--no-sandbox", "--disable-dev-shm-usage",
+                                          "--disable-blink-features=AutomationControlled"])
+        ctx = browser.new_context(viewport={"width": 900, "height": 640},
+                                  user_agent=UA, locale="en-US")
+        for i, it in enumerate(items):
+            page = ctx.new_page()
             try:
-                requests.get(_thumio(it["url"], full), headers=h, timeout=40)
-            except Exception:
-                pass
-    time.sleep(18)
-    # 下载保存
-    for i, it in enumerate(items):
-        thumb_ok = _download_shot(_thumio(it["url"], False), f"{outdir}/{i}_thumb.jpg", h)
-        full_ok = _download_shot(_thumio(it["url"], True), f"{outdir}/{i}_full.jpg", h)
-        if thumb_ok and full_ok:
-            it["shot_thumb"] = f"shots/{date_str}/{i}_thumb.jpg"
-            it["shot_full"] = f"shots/{date_str}/{i}_full.jpg"
-            print(f"shot {i} ok")
-        else:
-            print(f"shot {i} incomplete (thumb={thumb_ok} full={full_ok})")
+                page.goto(it["url"], wait_until="domcontentloaded", timeout=35000)
+                page.wait_for_timeout(3000)
+                if _is_challenge(page):
+                    page.wait_for_timeout(5000)
+                if _is_challenge(page):
+                    print(f"shot {i} blocked (verification), skip")
+                    page.close()
+                    continue
+                for sel in COOKIE_BTNS:
+                    try:
+                        page.click(sel, timeout=1000)
+                        page.wait_for_timeout(400)
+                        break
+                    except Exception:
+                        pass
+                page.wait_for_timeout(600)
+                page.screenshot(path=f"{outdir}/{i}_full.jpg", type="jpeg", quality=70,
+                                full_page=True)
+                try:
+                    page.locator("h1").first.scroll_into_view_if_needed(timeout=3000)
+                    page.evaluate("window.scrollBy(0, -90)")
+                    page.wait_for_timeout(600)
+                except Exception:
+                    pass
+                page.screenshot(path=f"{outdir}/{i}_thumb.jpg", type="jpeg", quality=74)
+                it["shot_thumb"] = f"shots/{date_str}/{i}_thumb.jpg"
+                it["shot_full"] = f"shots/{date_str}/{i}_full.jpg"
+                print(f"shot {i} ok")
+            except Exception as e:
+                print(f"shot {i} failed:", e)
+            finally:
+                if not page.is_closed():
+                    page.close()
+        browser.close()
 
 
 def prune_shots(keep=14):
@@ -282,7 +308,7 @@ def build_html(date_str, weekday_cn, items, brief_text):
     </div>
     {body}
     <div style="margin-top:16px;padding:12px 14px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;font-size:12px;color:#6b7280;line-height:1.7;">
-      信息来自公开外媒报道（The Hindu、Al Jazeera、Modern Diplomacy 等），由 DeepSeek 翻译与梳理，可能存在偏差或时效差，仅供参考，不代表本简报立场。截图由第三方服务生成、托管于本站，方便在原站无法访问时查看。
+      信息来自公开外媒报道（The Hindu、Al Jazeera、Modern Diplomacy 等），由 DeepSeek 翻译与梳理，可能存在偏差或时效差，仅供参考，不代表本简报立场。截图由本服务自动生成、托管于本站，方便在原站无法访问时查看。
     </div>
   </div>
   <div style="text-align:center;color:#9ca3af;font-size:12px;padding:16px;">每日军情简报 · 云端自动推送 · {date_str}</div>
